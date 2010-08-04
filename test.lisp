@@ -84,10 +84,10 @@
 (defclass <x> () (x ))
 (defvar test-x (make-instance '<x>))
 (setf (slot-ref test-x 'x) 1)
-(let-c (x) test-x
-       x)
-(let-c x test-x
-       x)
+(is 1 (let-c (x) test-x
+             x))
+(is 1 (let-c x test-x
+             x))
 
 (defvar test-ht (make-hash-table :test #'equal))
 (setf (gethash "x" test-ht) 13)

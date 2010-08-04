@@ -14,8 +14,9 @@
    ;;; macros
    ;; #:defmacro*  複雑なので、loadしてもらう。
    #:load-macro
-   #:!
    #:the-all
+   #:error->x
+   #:write-circular-list
    
    #:let-s #:let-c #:let-h #:let-a
    
@@ -38,6 +39,9 @@
    #:take-topn #:take-topn-assoc
    #:program->string-list
 
+   ;; mathematics
+   #:log2
+
    ;; p*p like
    #:number-format 
    
@@ -46,6 +50,7 @@
    
    #:sort-alist
    #:random-string
+   
    ))
 
 ;; tyt-no-package.lisp に drop do版など
@@ -56,7 +61,6 @@
 ;; (declaim (maybe-inline cadr* caar* cddr* cdar*))
 
 (eval-when (:compile-toplevel :execute :load-toplevel)
-  (proclaim '(optimize (speed 0)(safety 0) (debug 3) (compilation-speed 3) (space 0)))
   (declaim (inline car* cdr*))
  
   ;;  :execute       インタプリタにロードするときに評価する
@@ -68,7 +72,7 @@
   (defun intern++ (sym &optional package)
     (if package (intern (symbol-name sym) package)
         (intern (symbol-name sym))))
-  
+
   (defun mkstr (&rest args)
     (with-output-to-string (s)
       (dolist (a args) (princ a s))))
@@ -82,6 +86,43 @@
           ((error (lambda (e) (declare (ignorable e))(return-from describe+ ""))))
         (describe symbol))))
 
+  (defmacro error->x (default &rest body)
+    (let ((%s (gensym )))
+      `(block ,%s
+         (handler-bind
+             ((error (lambda (e) (declare (ignorable e))(return-from ,%s ,default))))
+           ,@body))))
+
+  (defun write-circular-list (lis)
+    (declare (optimize (speed 3) (safety 0) (debug 0) (compilation-speed 0) (space 0)))
+    (letp lp ((slow lis)
+              (lis lis)
+              (isfirst t))
+      (cond ((consp lis)
+             (if isfirst
+                 (write-string "(")
+                 (write-string " "))
+             (lp (car lis) (car lis) t)
+             (setf lis (cdr lis))
+             (cond ((consp lis)
+                    (if (eq lis slow)
+                        (format t " ~s ... )" (car lis))
+                        (progn
+                          (write-string " ")
+                          (lp (car lis) (car lis) t)
+                          (lp (cdr slow) (cdr lis) nil))))
+                   ((null lis)
+                    (write-string ")"))
+                   (t (format t ". ~s)" lis))))
+            ((null lis)
+             (if isfirst
+                 (write-string "nil")
+                 (write-string ")")))
+            (t
+             (if isfirst
+                 (write lis)
+                 (format t " . ~s)" lis))))))
+  
   ;; 拾いもん
   (defmacro print-form-and-results (form)
     `(format t "~&~A --> ~S~%" (write-to-string ',form) ,form))
@@ -123,10 +164,12 @@
   ;; 公開するが自分専用ライブラリなので勘弁してもらう。
   (defmacro load-macro ()
     `(load (merge-pathnames "share/lib/lisp/tyt/macros.lisp" (user-homedir-pathname))))
-
+  
+  (load-macro)
+  
   (defmacro the-all ( type op &rest rest)
     `(the ,type (,op ,@(mapcar (^ (x) `(the ,type ,x)) rest))))
-
+  
   ;; (defun-alias first* car*)
   ;; (defun-alias second* cadr*)
   ;; (defun-alias third* caddr*)
@@ -173,27 +216,24 @@
 
   ;; destructuring-bind版
   ;; it.base.arnesiにもある。
-  (defmacro dolist*  (vars-lis-ret &rest body)
-    (let ((%x (gensym)))
-      (umatch vars-lis-ret
-        ((vars lis . ret)
-         `(dolist (,%x ,lis ,@ret)
-            (letl ,vars ,%x
-              ,@body)))
-        (_ (error "malformed dolist*")))))
+  (defmacro* dolist*  (vars-lis-ret &rest body)(%x)
+    (umatch vars-lis-ret
+      ((vars lis . ret)
+       `(dolist (,%x ,lis ,@ret)
+          (letl ,vars ,%x
+            ,@body)))
+      (_ (error "malformed dolist*"))))
   
-  (defmacro fold* (vars-lis-xs ret-val-proc &rest forms)
-    (let ((%lp (gensym)) (%lis (gensym)) (%xs (gensym)))
-      (letl (%vars lis . xs) vars-lis-xs
-        (if (consp xs) (setf %xs (car xs)))
-        (letl (%ret val . proc) ret-val-proc
-          `(letp ,%lp ((,%ret ,val)  (,%lis ,lis))
-             (umatch ,%lis
-               ((,%vars . ,%xs)
-                (,%lp ,@(if (>= (length forms) 2) `((progn ,@forms)) forms) ,%xs))
-               (nil ,(if (null proc) %ret `(,(car proc) ,%ret)))
-               (t  (error "fold*: mulformed list"))))
-          ))))
+  (defmacro* fold* (vars-lis-xs ret-val-proc &rest forms) (%lp %lis %xs)
+    (letl (%vars lis . xs) vars-lis-xs
+      (letl (%ret val . proc) ret-val-proc
+        `(letp ,%lp ((,%ret ,val)  (,%lis ,lis))
+           (umatch ,%lis
+             ((,%vars . ,(car* xs %xs))
+              (,%lp (progn ,@forms) ,%xs))
+             (nil ,(if (null proc) %ret `(,(car proc) ,%ret)))
+             (t  (error "fold*: mulformed list"))))
+        )))
 
   ;;(defun accum (end? term succ kons knil &rest args)
   ;;  (let (tmp)
@@ -208,7 +248,7 @@
   ;;      `(accum 'null  'car 'cdr (lambda (,var-knil ,@vars) ,@body) ,knil ,@list-of-list))))
 
   (defmacro map* (var+list &rest body)
-    `(fold* ,var+list (knil '() nreverse) (cons ,@body knil)))
+    `(fold* ,var+list (knil '() nreverse) (cons (progn ,@body) knil)))
   
   
 ;;  (define-macro* (doht  key+val+ht+ret . forms) ()
@@ -352,7 +392,6 @@
   ;; p*p likeな変数名なのでやめたい。
   (defun number-format (x)
     (format nil "~:D" x))
-  ;; ==> "1,000,000"
 
   (defun map-tree (proc tree)
     (cond ((consp tree)
@@ -407,7 +446,10 @@
     (loop for (a b) on plist by #'cddr
        do (setq knil (funcall term knil a b)))
     knil)
-  
+
+  (defun log2 (x)
+    (/ (log x) (log 2)))
+
   )
 
 
